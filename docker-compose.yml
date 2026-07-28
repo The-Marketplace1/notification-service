@@ -1,0 +1,108 @@
+# docker-compose.yml — Local development stack
+#
+# Starts PostgreSQL, Redis, and the notification-service together.
+# Requires Docker and Docker Compose v2 (docker compose).
+#
+# Quick start:
+#   cp .env.example .env        # fill in SMTP/Twilio/Firebase secrets
+#   docker compose up --build
+#
+# Notification service will be available at http://localhost:8082/notifications
+#
+# To rebuild only the service after code changes:
+#   docker compose up --build notification-service
+#
+# To run database migrations after first start:
+#   docker compose exec notification-service bash scripts/migrate.sh --force
+#
+# To tear down (keeps volumes):
+#   docker compose down
+#
+# To tear down and wipe all data:
+#   docker compose down -v
+
+services:
+
+  # ── PostgreSQL ─────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: notifdb
+      POSTGRES_USER: notif
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-notiflocal}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notif -d notifdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ──────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── notification-service ───────────────────────────────────
+  notification-service:
+    build:
+      context: .
+      dockerfile: artifacts/notification-service/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8082:8082"
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: "8082"
+
+      # Database — points to the postgres service above
+      DATABASE_URL: >-
+        postgresql://notif:${POSTGRES_PASSWORD:-notiflocal}@postgres:5432/notifdb
+
+      # Redis — points to the redis service above
+      REDIS_URL: redis://redis:6379
+
+      # Email (optional — delivery disabled if unset)
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      FROM_EMAIL: ${FROM_EMAIL:-notifications@platform.local}
+
+      # SMS via Twilio (optional)
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+
+      # Push via Firebase (optional — paste full service account JSON as one line)
+      FIREBASE_SERVICE_ACCOUNT: ${FIREBASE_SERVICE_ACCOUNT:-}
+
+      # Shared secret between services (recommended)
+      SERVICE_SECRET: ${SERVICE_SECRET:-}
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD", "./tools/bin/healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  postgres_data:

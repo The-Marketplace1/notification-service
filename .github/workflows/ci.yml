@@ -1,0 +1,260 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "24"
+  PNPM_VERSION: "10"
+
+jobs:
+
+  # ── Typecheck ──────────────────────────────────────────────
+  typecheck:
+    name: TypeScript typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck all packages
+        run: pnpm run typecheck
+
+
+  # ── Build ──────────────────────────────────────────────────
+  build:
+    name: Build notification-service
+    runs-on: ubuntu-latest
+    needs: typecheck
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build notification-service
+        run: pnpm --filter @workspace/notification-service run build
+        env:
+          PORT: "8082"
+          NODE_ENV: production
+
+      - name: Upload dist artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: notification-service-dist
+          path: artifacts/notification-service/dist/
+          retention-days: 7
+
+
+  # ── C tools ────────────────────────────────────────────────
+  c-tools:
+    name: Build & test C tools
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build C tools
+        run: make -C artifacts/notification-service
+
+      - name: Verify binaries exist
+        run: |
+          test -x artifacts/notification-service/tools/bin/healthcheck
+          test -x artifacts/notification-service/tools/bin/redis-ping
+
+      - name: healthcheck exits 1 when service is not running
+        run: |
+          artifacts/notification-service/tools/bin/healthcheck 127.0.0.1 9999 && exit 1 || true
+
+      - name: redis-ping exits 1 when Redis is not running
+        run: |
+          artifacts/notification-service/tools/bin/redis-ping 127.0.0.1 9999 && exit 1 || true
+
+
+  # ── Integration smoke test ─────────────────────────────────
+  integration:
+    name: Integration smoke test
+    runs-on: ubuntu-latest
+    needs: [typecheck]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: notifdb
+          POSTGRES_USER: notif
+          POSTGRES_PASSWORD: notiftest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U notif -d notifdb"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 3s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://notif:notiftest@localhost:5432/notifdb
+      REDIS_URL: redis://localhost:6379
+      PORT: "8082"
+      NODE_ENV: development
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Push database schema
+        run: pnpm --filter @workspace/notification-service run push
+        env:
+          DATABASE_URL: postgresql://notif:notiftest@localhost:5432/notifdb
+
+      - name: Start notification-service in background
+        run: |
+          pnpm --filter @workspace/notification-service run dev &
+          echo "SERVICE_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for service to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8082/notifications/healthz > /dev/null 2>&1; then
+              echo "Service is up after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Service did not start in time" >&2
+          exit 1
+
+      - name: Health check
+        run: |
+          STATUS=$(curl -sf http://localhost:8082/notifications/healthz | jq -r .status)
+          echo "Health status: $STATUS"
+          [ "$STATUS" = "ok" ] || [ "$STATUS" = "degraded" ]
+
+      - name: POST all 9 event types
+        run: |
+          post() {
+            CODE=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+              -X POST http://localhost:8082/notifications/events \
+              -H "Content-Type: application/json" -d "$2")
+            echo "[$1] HTTP $CODE: $(cat /tmp/resp.json)"
+            [ "$CODE" = "202" ] || exit 1
+          }
+
+          post user.registered \
+            '{"event":"user.registered","payload":{"userId":"ci1","email":"ci@test.com","name":"CI"}}'
+          post user.email.verified \
+            '{"event":"user.email.verified","payload":{"userId":"ci1","email":"ci@test.com","name":"CI"}}'
+          post password.reset.requested \
+            '{"event":"password.reset.requested","payload":{"userId":"ci1","email":"ci@test.com","resetUrl":"https://example.com/r/tok"}}'
+          post booking.created \
+            '{"event":"booking.created","payload":{"bookingId":"bk1","customerUserId":"ci1","professionalUserId":"ci2","customerName":"Alice","professionalName":"Bob","customerEmail":"ci@test.com","date":"2026-09-01","time":"10:00 AM"}}'
+          post booking.confirmed \
+            '{"event":"booking.confirmed","payload":{"bookingId":"bk1","customerUserId":"ci1","professionalUserId":"ci2","customerName":"Alice","professionalName":"Bob","customerEmail":"ci@test.com","date":"2026-09-01","time":"10:00 AM"}}'
+          post booking.cancelled \
+            '{"event":"booking.cancelled","payload":{"bookingId":"bk1","customerUserId":"ci1","professionalUserId":"ci2","customerName":"Alice","professionalName":"Bob","customerEmail":"ci@test.com","date":"2026-09-01","time":"10:00 AM"}}'
+          post review.created \
+            '{"event":"review.created","payload":{"reviewId":"r1","subjectUserId":"ci2","subjectEmail":"bob@test.com","subjectName":"Bob","reviewerName":"Alice","rating":5,"comment":"Great!"}}'
+          post professional.verified \
+            '{"event":"professional.verified","payload":{"userId":"ci2","email":"bob@test.com","name":"Bob"}}'
+          post transaction.completed \
+            '{"event":"transaction.completed","payload":{"userId":"ci1","email":"ci@test.com","name":"Alice","transactionId":"tx1","bookingId":"bk1","amount":"100.00","currency":"USD"}}'
+
+      - name: Template CRUD smoke test
+        run: |
+          ID=$(curl -sf -X POST http://localhost:8082/notifications/templates \
+            -H "Content-Type: application/json" \
+            -d '{"name":"ci-test","channel":"email","content":"CI {{name}}","active":true}' | jq -r .id)
+          echo "Created template: $ID"
+          curl -sf http://localhost:8082/notifications/templates/$ID | jq .name
+          curl -sf -X PUT http://localhost:8082/notifications/templates/$ID \
+            -H "Content-Type: application/json" -d '{"active":false}' | jq .active
+          curl -sf -X DELETE http://localhost:8082/notifications/templates/$ID
+          echo "Template CRUD OK"
+
+      - name: Verify notifications in DB
+        run: |
+          COUNT=$(curl -sf http://localhost:8082/notifications/notifications | jq .total)
+          echo "Notifications in DB: $COUNT"
+          [ "$COUNT" -gt 0 ]
+
+      - name: Stop service
+        if: always()
+        run: kill "$SERVICE_PID" 2>/dev/null || true
+
+
+  # ── Docker build ───────────────────────────────────────────
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    needs: [typecheck, c-tools]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: artifacts/notification-service/Dockerfile
+          push: false
+          tags: notification-service:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test Docker image
+        run: |
+          docker run --rm \
+            -e DATABASE_URL=postgresql://notif:test@localhost/notifdb \
+            -e PORT=8082 \
+            --entrypoint node \
+            notification-service:ci \
+            --version
