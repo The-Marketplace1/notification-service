@@ -97220,6 +97220,7 @@ function startPushWorker() {
   worker.on("error", (err) => {
     logger.error({ err }, "Push worker error");
   });
+  return worker;
 }
 
 // src/workers/index.ts
