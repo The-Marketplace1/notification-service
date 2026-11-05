@@ -128,6 +128,7 @@ jobs:
       REDIS_URL: redis://localhost:6379
       PORT: "8082"
       NODE_ENV: development
+      SERVICE_SECRET: ci-test-secret
 
     steps:
       - uses: actions/checkout@v4
@@ -179,6 +180,7 @@ jobs:
             CODE=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
               -X POST http://localhost:8082/notifications/events \
               -H "Content-Type: application/json" \
+              -H "X-Service-Secret: $SERVICE_SECRET" \
               -d "$2")
             echo "[$1] HTTP $CODE: $(cat /tmp/resp.json)"
             [ "$CODE" = "202" ] || exit 1
