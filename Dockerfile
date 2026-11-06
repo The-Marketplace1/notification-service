@@ -18,32 +18,34 @@ RUN make CC=gcc
 # ── Stage 2: Node.js builder ───────────────────────────────
 FROM node:24-bookworm-slim AS node-builder
 
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# Use the same pnpm major version as CI.
+RUN corepack enable && corepack prepare pnpm@10 --activate
 
 WORKDIR /workspace
 
-# Copy workspace manifests first for layer-cached dependency install
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
-COPY tsconfig.base.json tsconfig.json ./
-
-# Copy lib packages (needed for typecheck + build)
-COPY lib/ ./lib/
-
-# Copy only the notification-service package manifest
-COPY package.json ./package.json
-
-# Install all workspace dependencies (frozen for reproducibility)
+# Install dependencies from the manifests that exist in this repository.
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
-# Copy notification-service source
-COPY . ./
+# Copy the app sources and build configuration (this is a single-package app).
+COPY tsconfig.json build.mjs ./
+COPY src/ ./src/
 
-# Build the Node.js bundle
 RUN pnpm run build
 
 
-# ── Stage 3: Production runtime ────────────────────────────
+# ── Stage 3: Production dependencies ───────────────────────
+FROM node:24-bookworm-slim AS prod-deps
+
+RUN corepack enable && corepack prepare pnpm@10 --activate
+
+WORKDIR /workspace
+
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+RUN pnpm install --prod --frozen-lockfile
+
+
+# ── Stage 4: Production runtime ────────────────────────────
 FROM node:24-bookworm-slim AS runtime
 
 # Install only OS-level runtime deps:
@@ -64,11 +66,9 @@ WORKDIR /app
 # Copy compiled C tools
 COPY --from=c-builder /build/tools/bin/ ./tools/bin/
 
-# Copy Node.js dist bundle
+# Copy Node.js dist bundle and production dependencies
 COPY --from=node-builder /workspace/dist/ ./dist/
-
-# Copy node_modules that esbuild externalised
-COPY --from=node-builder /workspace/node_modules/ ./node_modules/
+COPY --from=prod-deps /workspace/node_modules/ ./node_modules/
 
 # Copy scripts
 COPY scripts/ ./scripts/
