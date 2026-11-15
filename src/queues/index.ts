@@ -3,13 +3,13 @@ import { redisOptions } from "../lib/redis";
 import type { EmailJobData, SmsJobData, PushJobData } from "../types/jobs";
 
 const defaultJobOptions = {
-  attempts: 3,
+  attempts: 5,
   backoff: {
     type: "exponential" as const,
     delay: 2000,
   },
   removeOnComplete: { count: 500 },
-  removeOnFail: { count: 200 },
+  removeOnFail: false,
 };
 
 export const emailQueue = new Queue<EmailJobData, void, string>(
