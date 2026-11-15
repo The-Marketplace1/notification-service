@@ -12,10 +12,17 @@ export async function safeAdd(
   try {
     const q = queue as Queue<never, void, never>;
     await q.add(name as never, data as never, opts);
+    logger.info({ queueName: queue.name, jobName: name }, "Job queued");
   } catch (err) {
-    logger.warn(
+    const message = err instanceof Error ? err.message : String(err);
+
+    logger.error(
       { err, queueName: queue.name, jobName: name },
-      "Failed to add job to queue — Redis unavailable. Notification saved as pending and can be re-queued when Redis is restored.",
+      "Job enqueue failed; rejecting the request to avoid false success",
+    );
+
+    throw new Error(
+      `Failed to enqueue ${queue.name}/${name}: ${message}`,
     );
   }
 }
