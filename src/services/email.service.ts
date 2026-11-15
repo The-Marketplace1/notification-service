@@ -13,11 +13,9 @@ function getTransporter(): Transporter {
   const pass = process.env.SMTP_PASS;
 
   if (!host || !user || !pass) {
-    logger.warn(
-      "SMTP credentials not fully configured — email sending is disabled. Set SMTP_HOST, SMTP_USER, SMTP_PASS.",
+    throw new Error(
+      "SMTP credentials are not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS before sending email.",
     );
-    transporter = nodemailer.createTransport({ jsonTransport: true });
-    return transporter;
   }
 
   transporter = nodemailer.createTransport({
@@ -28,23 +26,6 @@ function getTransporter(): Transporter {
   });
 
   return transporter;
-}
-
-function htmlToText(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n\n")
-    .replace(/<\/h[1-6]>/gi, "\n\n")
-    .replace(/<a[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/gi, "$2 ($1)")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
 }
 
 export interface SendEmailOptions {
@@ -75,4 +56,21 @@ export async function sendEmail(options: SendEmailOptions): Promise<void> {
     { messageId: result.messageId, to: options.to },
     "Email dispatched",
   );
+}
+
+function htmlToText(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<\/h[1-6]>/gi, "\n\n")
+    .replace(/<a[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/gi, "$2 ($1)")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
