@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod/v4";
 import { logger } from "../lib/logger";
+import { requireServiceSecret } from "../lib/auth";
 import {
   handleUserRegistered,
   handleEmailVerified,
@@ -71,21 +72,10 @@ const transactionPayloadSchema = z.object({
 });
 
 const eventEnvelopeSchema = z.object({
+  eventId: z.string().min(1),
   event: z.string().min(1),
   payload: z.record(z.string(), z.unknown()),
 });
-
-function requireServiceSecret(req: Request, res: Response): boolean {
-  const secret = process.env.SERVICE_SECRET;
-  if (!secret) return true;
-
-  const provided = req.headers["x-service-secret"];
-  if (provided !== secret) {
-    res.status(401).json({ error: "Unauthorized" });
-    return false;
-  }
-  return true;
-}
 
 function parsePayload<T>(
   schema: z.ZodType<T>,
@@ -93,27 +83,31 @@ function parsePayload<T>(
   res: Response,
 ): T | null {
   const result = schema.safeParse(payload);
+
   if (!result.success) {
-    res
-      .status(400)
-      .json({ error: "Invalid event payload", issues: result.error.issues });
+    res.status(400).json({
+      error: "Invalid event payload",
+      issues: result.error.issues,
+    });
     return null;
   }
+
   return result.data;
 }
 
-router.post("/events", async (req: Request, res: Response) => {
-  if (!requireServiceSecret(req, res)) return;
-
+router.post("/events", requireServiceSecret, async (req: Request, res: Response) => {
   const envelope = eventEnvelopeSchema.safeParse(req.body);
+
   if (!envelope.success) {
-    res
-      .status(400)
-      .json({ error: "Invalid request", issues: envelope.error.issues });
+    res.status(400).json({
+      error: "Invalid request",
+      issues: envelope.error.issues,
+    });
     return;
   }
 
   const { event, payload } = envelope.data;
+
   req.log.info({ event }, "Received event");
 
   try {
