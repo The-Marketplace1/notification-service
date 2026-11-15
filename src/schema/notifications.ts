@@ -2,15 +2,17 @@ import { pgTable, uuid, text, timestamp, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
-export const notificationChannelEnum = ["email", "sms", "push"] as const;
+export const notificationChannelEnum = ["email", "sms", "push", "in_app"] as const;
 export type NotificationChannel = (typeof notificationChannelEnum)[number];
 
 export const notificationStatusEnum = [
   "pending",
   "sent",
+  "delivered",
   "failed",
   "cancelled",
 ] as const;
+
 export type NotificationStatus = (typeof notificationStatusEnum)[number];
 
 export const notificationsTable = pgTable("notifications", {
