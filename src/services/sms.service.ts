@@ -12,17 +12,16 @@ type TwilioClient = {
 
 let twilioClient: TwilioClient | null = null;
 
-async function getTwilioClient(): Promise<TwilioClient | null> {
+async function getTwilioClient(): Promise<TwilioClient> {
   if (twilioClient) return twilioClient;
 
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken = process.env.TWILIO_AUTH_TOKEN;
 
   if (!accountSid || !authToken) {
-    logger.warn(
-      "Twilio credentials not configured — SMS sending is disabled. Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN.",
+    throw new Error(
+      "Twilio credentials are not configured. Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN.",
     );
-    return null;
   }
 
   try {
@@ -31,7 +30,7 @@ async function getTwilioClient(): Promise<TwilioClient | null> {
     return twilioClient;
   } catch (err) {
     logger.error({ err }, "Failed to load Twilio client");
-    return null;
+    throw err;
   }
 }
 
@@ -44,12 +43,10 @@ export async function sendSms(options: SendSmsOptions): Promise<void> {
   const fromNumber = process.env.TWILIO_FROM_NUMBER;
 
   if (!fromNumber) {
-    logger.warn("TWILIO_FROM_NUMBER not set — skipping SMS send.");
-    return;
+    throw new Error("TWILIO_FROM_NUMBER is not set.");
   }
 
   const client = await getTwilioClient();
-  if (!client) return;
 
   const result = await client.messages.create({
     to: options.to,
