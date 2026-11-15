@@ -59,8 +59,6 @@ export function startPushWorker(): Worker<PushJobData, void, string> {
   worker.on("error", (err) => {
     logger.error({ err }, "Push worker error");
   });
-  
-  return worker;  
 
+  return worker;
 }
-
